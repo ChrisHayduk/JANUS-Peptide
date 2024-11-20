@@ -74,6 +74,7 @@ class JANUS:
         self.is_run_relax = is_run_relax
         self.bucket_name = bucket_name
         self.experiment_id = experiment_id
+        self.max_template_date = max_template_date
 
         # set all class variables
         self.work_dir = work_dir
