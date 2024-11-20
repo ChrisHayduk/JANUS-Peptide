@@ -1,4 +1,8 @@
 import numpy as np
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'alphafold-parallel-msa'))
+
 from alphafold.common import protein
 from alphafold.common import residue_constants
 
