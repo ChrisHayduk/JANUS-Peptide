@@ -219,19 +219,56 @@ class JANUS:
                 # Check job status
                 status = job.state
                 if status.is_completed:
+                    tasks = job.get_tasks()
+                    for task in tasks:
+                        if task.display_name == 'Create unique run ID':
+                            features_dir = task.outputs['output']  # This will be the GCS path
+                            break
                     # Job finished successfully
                     try:
-                        # Get output artifacts/metrics from the pipeline
-                        # This will depend on how your pipeline stores results
-                        output_uri = f'gs://{self.bucket_name}/pipeline_runs/{self.pip}/16853584617/{pipeline_jobs[seq][2]}'
-                        prediction_result = self._download_and_parse_result(output_uri)
-                        feature_dict = self._download_and_parse_result(output_uri)
+                        base_uri = f'gs://{self.bucket_name}/pipeline_runs/{self.pip}/16853584617/{pipeline_jobs[seq][2]}'
+                        
+                        # List all predict_* directories
+                        storage_client = storage.Client(project=self.project_id)
+                        bucket = storage_client.bucket(self.bucket_name)
+                        predict_dirs = [b.name for b in bucket.list_blobs(prefix=f"pipeline_runs/{self.pip}/16853584617/{pipeline_jobs[seq][2]}/")
+                                    if b.name.split('/')[-2].startswith('predict_')]
+                        
+                        # Find prediction with highest ranking confidence
+                        max_confidence = float('-inf')
+                        best_prediction_path = None
+                        best_features_path = None
+                        
+                        for predict_dir in predict_dirs:
+                            # Get the executor output JSON
+                            executor_output_path = f"{predict_dir}/executor_output.json"
+                            executor_output = self._download_and_parse_result(f"gs://{self.bucket_name}/{executor_output_path}")
+                            
+                            # Extract ranking confidence
+                            try:
+                                confidence = executor_output['artifacts']['raw_prediction']['artifacts'][0]['metadata']['ranking_confidence']
+                                if confidence > max_confidence:
+                                    max_confidence = confidence
+                                    # Get path to raw_prediction.pkl in the same directory
+                                    best_prediction_path = f"gs://{self.bucket_name}/{predict_dir}/raw_prediction.pkl"
+                            except (KeyError, IndexError) as e:
+                                print(f"Warning: Could not extract ranking confidence from {executor_output_path}: {e}")
+                                continue
+                        
+                        if best_prediction_path is None:
+                            raise ValueError("No valid predictions found")
+                            
+                        # Load the best prediction and features
+                        prediction_result = self._download_and_parse_result(best_prediction_path)
+                        feature_dict = self._download_and_parse_result(f"{features_dir}/all_chain_features.pkl")
                         
                         # Run fitness function on the AlphaFold2 output
-                        fitness, if_dist_peptide, plddt, unrelaxed_protein = self.fitness_function(seq, 
-                                                                                                   self.receptor_if_residues, 
-                                                                                                   feature_dict, 
-                                                                                                   prediction_result)
+                        fitness, if_dist_peptide, plddt, unrelaxed_protein = self.fitness_function(
+                            seq, 
+                            self.receptor_if_residues, 
+                            feature_dict, 
+                            prediction_result
+                        )
                         results[seq] = fitness
                         completed_seqs.add(seq)
                         
@@ -245,7 +282,7 @@ class JANUS:
                     print(f"Pipeline failed for sequence {seq}")
                     results[seq] = float('-inf')
                     completed_seqs.add(seq)
-            
+
             # Remove completed jobs from pending set
             pending_jobs -= completed_seqs
             
