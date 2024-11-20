@@ -1,76 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Sat Jul 31 16:39:03 2021
-
-@author: akshat
+Crossover operations for amino acid sequences
 """
 import numpy as np
-import rdkit
-from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.DataStructs.cDataStructs import TanimotoSimilarity
-import selfies 
-from selfies import encoder, decoder
-import multiprocessing
+import random
+from typing import List
+from Bio import pairwise2
+from Bio.SubsMat import MatrixInfo as matlist
+from .utils import get_sequence_similarity
 
-from rdkit import RDLogger
-
-from .utils import get_selfies_chars
-
-RDLogger.DisableLog("rdApp.*")
-
-def get_fp_scores(smiles_back, target_smi):
+def get_joint_similarity(all_sequences: List[str], starting_seq: str, target_seq: str) -> List[float]:
     """
-    Given a list of SMILES (smiles_back), tanimoto similarities are calculated 
-    (using Morgan fingerprints) to SMILES (target_smi). 
+    Get joint similarity values for all sequences, calculated with 
+    reference to starting_seq & target_seq.
 
     Parameters
     ----------
-    smiles_back : (list of str)
-        List of valid SMILE strings. 
-    target_smi : (str)
-        Valid SMILES string. 
+    all_sequences : List[str]
+        List of amino acid sequences
+    starting_seq : str
+        Input sequence
+    target_seq : str
+        Target sequence
 
     Returns
     -------
-    smiles_back_scores : (list of floats)
-        List of figerprint similarity scores of each smiles in input list. 
+    List[float]
+        List of joint similarity scores for all sequences
     """
-    smiles_back_scores = []
-    target = Chem.MolFromSmiles(target_smi)
-    fp_target = AllChem.GetMorganFingerprint(target, 2)
-    for item in smiles_back:
-        mol = Chem.MolFromSmiles(item)
-        fp_mol = AllChem.GetMorganFingerprint(mol, 2)
-        score = TanimotoSimilarity(fp_mol, fp_target)
-        smiles_back_scores.append(score)
-    return smiles_back_scores
-
-
-def get_joint_sim(all_smiles, starting_smile, target_smile):
-    """
-    Get joint similarity values for all smiles in all_smiles, calculated with 
-    refernce to starting_smile & target_smile. 
-
-    Parameters
-    ----------
-    all_smiles : (list of string)
-        List of SMILE strings.
-    starting_smile : (str)
-        Input smiles string.
-    target_smile : (str)
-        Input smiles string.
-
-    Returns
-    -------
-    better_score : (list of floats)
-        List of joint similarity scores for all smiles in all_smiles.
-    """
-    scores_start = get_fp_scores(all_smiles, starting_smile)  # similarity to target
-    scores_target = get_fp_scores(
-        all_smiles, target_smile
-    )  # similarity to starting structure
+    scores_start = get_sequence_similarity(all_sequences, starting_seq)
+    scores_target = get_sequence_similarity(all_sequences, target_seq)
     data = np.array([scores_target, scores_start])
 
     avg_score = np.average(data, axis=0)
@@ -83,171 +43,139 @@ def get_joint_sim(all_smiles, starting_smile, target_smile):
 
     return better_score
 
-
-def obtain_path(starting_smile, target_smile):
+def obtain_path(starting_seq: str, target_seq: str) -> List[str]:
     """
-    Create a single path between molecules starting_smile and target_smile. 
+    Create a single path between starting_seq and target_seq by gradually
+    mutating one position at a time.
 
     Parameters
     ----------
-    starting_smile : (str)
-        Valid SMILES string.
-    target_smile : (str)
-        Valid SMILES string.
+    starting_seq : str
+        Starting amino acid sequence
+    target_seq : str
+        Target amino acid sequence
 
     Returns
     -------
-    path_smiles : (list of str)
-        List of all smiles strings encountered while creating a path.
+    List[str]
+        List of sequences representing the path from start to target
     """
-    starting_selfie = encoder(starting_smile)
-    target_selfie = encoder(target_smile)
+    # Convert sequences to lists for easier manipulation
+    start_list = list(starting_seq)
+    target_list = list(target_seq)
 
-    starting_selfie_chars = get_selfies_chars(starting_selfie)
-    target_selfie_char = get_selfies_chars(target_selfie)
-
-    # Pad the smaller string
-    if len(starting_selfie_chars) < len(target_selfie_char):
-        for _ in range(len(target_selfie_char) - len(starting_selfie_chars)):
-            starting_selfie_chars.append(" ")
+    # Pad the smaller sequence with gaps
+    if len(start_list) < len(target_list):
+        start_list.extend(['-'] * (len(target_list) - len(start_list)))
     else:
-        for _ in range(len(starting_selfie_chars) - len(target_selfie_char)):
-            target_selfie_char.append(" ")
+        target_list.extend(['-'] * (len(start_list) - len(target_list)))
 
+    # Find positions where sequences differ
     indices_diff = [
         i
-        for i in range(len(starting_selfie_chars))
-        if starting_selfie_chars[i] != target_selfie_char[i]
+        for i in range(len(start_list))
+        if start_list[i] != target_list[i]
     ]
-    path = {}
-    path[0] = starting_selfie_chars
 
+    # Create path by mutating one position at a time
+    path = {0: start_list.copy()}
+    
     for iter_ in range(len(indices_diff)):
-        idx = np.random.choice(indices_diff, 1)[0]  # Index to be operated on
-        indices_diff.remove(idx)  # Remove that index
+        idx = np.random.choice(indices_diff, 1)[0]  # Choose random position to mutate
+        indices_diff.remove(idx)
 
-        # Select the last member of path:
         path_member = path[iter_].copy()
-
-        # Mutate that character to the correct value:
-        path_member[idx] = target_selfie_char[idx]
+        path_member[idx] = target_list[idx]  # Mutate to target amino acid
         path[iter_ + 1] = path_member.copy()
 
-    # Collapse path to make them into SELFIE strings
-    paths_selfies = []
+    # Convert lists back to sequences, removing gaps
+    path_sequences = []
     for i in range(len(path)):
-        selfie_str = "".join(x for x in path[i])
-        paths_selfies.append(selfie_str.replace(" ", ""))
+        seq = ''.join(x for x in path[i] if x != '-')
+        path_sequences.append(seq)
 
-    if paths_selfies[-1] != target_selfie:
-        raise Exception("Unable to discover target structure!")
-    path_smiles = [decoder(x) for x in paths_selfies]
+    return path_sequences
 
-    return path_smiles
-
-
-def perform_crossover(comb_smi, num_random_samples):
+def perform_crossover(combined_seq: str, num_random_samples: int) -> List[str]:
     """
-    Create multiple paths between SMILES in comb_smi to obtain median molecules, 
-    representing the crossover structure. 
+    Create multiple paths between sequences to obtain intermediate sequences
+    representing crossover structures.
 
     Parameters
     ----------
-    comb_smi : (str)
-        Two smiles string concatenated using xxx (example: CCCCCCxxxSSS).
-    num_random_samples : (int)
-        Number of different smiles orientations to consider while forming paths. 
+    combined_seq : str
+        Two sequences concatenated using xxx (example: MGKHDLxxxPAVKDLF)
+    num_random_samples : int
+        Number of different sequence orientations to consider
 
     Returns
     -------
-    collect_smiles_canon : (list of SMILES)
-        List of all potential unique median molecules enoucntered during path formation.
+    List[str]
+        List of unique intermediate sequences encountered during path formation
     """
-    smi_a, smi_b = comb_smi.split("xxx")
-    mol_a, mol_b = Chem.MolFromSmiles(smi_a), Chem.MolFromSmiles(smi_b)
-    Chem.Kekulize(mol_a)
-    Chem.Kekulize(mol_b)
+    seq_a, seq_b = combined_seq.split("xxx")
+    
+    # Generate sequence variations by randomly inserting gaps
+    def generate_sequence_variations(seq: str, num_samples: int) -> List[str]:
+        variations = []
+        for _ in range(num_samples):
+            seq_list = list(seq)
+            # Randomly insert 0-3 gaps at random positions
+            num_gaps = random.randint(0, 3)
+            for _ in range(num_gaps):
+                pos = random.randint(0, len(seq_list))
+                seq_list.insert(pos, '-')
+            variations.append(''.join(seq_list))
+        return variations
 
-    randomized_smile_orderings_a = []
-    for _ in range(num_random_samples):
-        randomized_smile_orderings_a.append(
-            rdkit.Chem.MolToSmiles(
-                mol_a,
-                canonical=False,
-                doRandom=True,
-                isomericSmiles=False,
-                kekuleSmiles=True,
-            )
-        )
+    # Generate variations for both sequences
+    variations_a = generate_sequence_variations(seq_a, num_random_samples)
+    variations_b = generate_sequence_variations(seq_b, num_random_samples)
 
-    randomized_smile_orderings_b = []
-    for _ in range(num_random_samples):
-        randomized_smile_orderings_b.append(
-            rdkit.Chem.MolToSmiles(
-                mol_b,
-                canonical=False,
-                doRandom=True,
-                isomericSmiles=False,
-                kekuleSmiles=True,
-            )
-        )
+    # Generate paths between all variations
+    collected_sequences = []
+    for seq_1 in variations_a:
+        for seq_2 in variations_b:
+            path_sequences = obtain_path(seq_1, seq_2)
+            collected_sequences.extend(path_sequences)
 
-    collect_smiles = []
-    for smi_1 in randomized_smile_orderings_a:
-        for smi_2 in randomized_smile_orderings_b:
-            for item in obtain_path(smi_1, smi_2):
-                collect_smiles.append(item)
+    # Remove gaps and duplicates
+    clean_sequences = []
+    for seq in collected_sequences:
+        clean_seq = seq.replace('-', '')
+        if clean_seq:  # Only add non-empty sequences
+            clean_sequences.append(clean_seq)
 
-    collect_smiles_canon = []
-    for item in collect_smiles:
-        try:
-            smi_canon = Chem.MolToSmiles(
-                Chem.MolFromSmiles(item, sanitize=True),
-                isomericSmiles=False,
-                canonical=True,
-            )
-            if  smi_canon != "":  # Size restriction!
-                collect_smiles_canon.append(smi_canon)
-        except:
-            continue
+    return list(set(clean_sequences))
 
-    collect_smiles_canon = list(set(collect_smiles_canon))
-
-    return collect_smiles_canon
-
-
-def crossover_smiles(smiles_join, crossover_num_random_samples):
+def crossover_sequences(sequences_join: str, crossover_num_random_samples: int) -> List[str]:
     """
-    Return a list of smiles (crossover molecules) that are ordered (highest to lowest)
-    by joint similarity scores. 
+    Return a list of sequences (crossover results) ordered by joint similarity scores.
 
     Parameters
     ----------
-    smiles_join : (str)
-        Two smiles string concatenated using xxx (example: CCCCCCxxxSSS).
+    sequences_join : str
+        Two sequences concatenated using xxx (example: MGKHDLxxxPAVKDLF)
+    crossover_num_random_samples : int
+        Number of random samples to generate for each sequence
 
     Returns
     -------
-    med_all_ord : (list of SMILES)
-        List of crossover molecules that are ordered (highest to lowest)
-        by joint similarity scores.
+    List[str]
+        List of crossover sequences ordered by joint similarity scores
     """
     map_ = {}
-
-    map_[smiles_join] = perform_crossover(
-        smiles_join, num_random_samples=crossover_num_random_samples
+    map_[sequences_join] = perform_crossover(
+        sequences_join, 
+        num_random_samples=crossover_num_random_samples
     )
 
-    # map_ordered = {}
     for key_ in map_:
         med_all = map_[key_]
-        smi_1, smi_2 = key_.split("xxx")
-        joint_sim = get_joint_sim(med_all, smi_1, smi_2)
+        seq_1, seq_2 = key_.split("xxx")
+        joint_sim = get_joint_similarity(med_all, seq_1, seq_2)
 
-        joint_sim_ord = np.argsort(joint_sim)
-        joint_sim_ord = joint_sim_ord[::-1]
-
+        joint_sim_ord = np.argsort(joint_sim)[::-1]
         med_all_ord = [med_all[i] for i in joint_sim_ord]
 
     return med_all_ord
-    

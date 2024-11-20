@@ -5,45 +5,75 @@ import yaml
 from functools import partial
 from collections import OrderedDict
 from typing import Callable, List, Optional
+from google.cloud import aiplatform
+from google.cloud import storage
+import time
+from typing import Dict, List, Tuple
+import concurrent.futures
 
 import numpy as np
+from Bio import pairwise2
+from Bio.SubsMat import MatrixInfo as matlist
 
-from .crossover import crossover_smiles
-from .mutate import mutate_smiles
-from .network import create_and_train_network, obtain_model_pred
-from .utils import sanitize_smiles, get_fp_scores
-from .fragment import form_fragments
-
+from .mutate import mutate_sequence
+from .crossover import crossover_sequences
+from .utils import get_sequence_similarity
+from .fitness import fitness_function
 
 class JANUS:
-    """ JANUS class for genetic algorithm applied on SELFIES
-    string representation.
+    """ JANUS class for genetic algorithm applied on amino acid sequences.
     See example/example.py for descriptions of parameters
     """
 
     def __init__(
         self,
         work_dir: str,
-        fitness_function: Callable,
         start_population: str,
+        target_sequence: str,
+        project_id: str,
+        region: str,
+        pipeline_root_path: str,
+        pipeline_name: str,
+        bucket_name: str,
+        experiment_id: str,
         verbose_out: Optional[bool] = False,
         custom_filter: Optional[Callable] = None,
         alphabet: Optional[List[str]] = None,
         use_gpu: Optional[bool] = True,
         num_workers: Optional[int] = None,
-        generations: Optional[int] = 200,
-        generation_size: Optional[int] = 5000,
+        generations: Optional[int] = 300,
+        generation_size: Optional[int] = 20,
         num_exchanges: Optional[int] = 5,
-        use_fragments: Optional[bool] = True,
-        num_sample_frags: Optional[int] = 200,
-        use_classifier: Optional[bool] = True,
         explr_num_random_samples: Optional[int] = 5,
         explr_num_mutations: Optional[int] = 5,
         crossover_num_random_samples: Optional[int] = 1,
-        exploit_num_random_samples: Optional[int] = 400,
-        exploit_num_mutations: Optional[int] = 400,
-        top_mols: Optional[int] = 1
+        exploit_num_random_samples: Optional[int] = 20,
+        exploit_num_mutations: Optional[int] = 20,
+        top_seqs: Optional[int] = 1,
+        use_small_bfd: str = "true",
+        num_multimer_predictions_per_model: int = 1,
+        is_run_relax: str = "",
+        max_template_date = '2030-01-01'
     ):
+        # Default amino acid alphabet if none provided
+        if alphabet is None:
+            self.alphabet = [
+                'A', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L',
+                'M', 'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y'
+            ]
+        else:
+            self.alphabet = alphabet
+
+        self.project_id = project_id
+        self.region = region 
+        self.pipeline_name = pipeline_name
+        self.pipeline_template_path = f'{self.pipeline_name}.json'
+        self.pipeline_root_path = pipeline_root_path
+        self.use_small_bfd = use_small_bfd
+        self.num_multimer_predictions_per_model = num_multimer_predictions_per_model
+        self.is_run_relax = is_run_relax
+        self.bucket_name = bucket_name
+        self.experiment_id = experiment_id
 
         # set all class variables
         self.work_dir = work_dir
@@ -51,21 +81,20 @@ class JANUS:
         self.start_population = start_population
         self.verbose_out = verbose_out
         self.custom_filter = custom_filter
-        self.alphabet = alphabet
         self.use_gpu = use_gpu
         self.num_workers = num_workers if num_workers is not None else multiprocessing.cpu_count()
         self.generations = generations
         self.generation_size = generation_size
         self.num_exchanges = num_exchanges
-        self.use_fragments = use_fragments
-        self.num_sample_frags = num_sample_frags
-        self.use_classifier = use_classifier
         self.explr_num_random_samples = explr_num_random_samples
         self.explr_num_mutations = explr_num_mutations
         self.crossover_num_random_samples = crossover_num_random_samples
         self.exploit_num_random_samples = exploit_num_random_samples
         self.exploit_num_mutations = exploit_num_mutations
-        self.top_mols = top_mols
+        self.top_seqs = top_seqs
+
+        self.peptide_counter = 1
+        self.target_sequence = target_sequence
 
         # create dump folder
         if not os.path.isdir(f"./{self.work_dir}"):
@@ -73,57 +102,196 @@ class JANUS:
         self.save_hyperparameters()
 
         # get initial population
-        init_smiles, init_fitness = [], []
+        init_sequences, init_fitness = [], []
         with open(self.start_population, "r") as f:
             for line in f:
-                line = sanitize_smiles(line.strip())
-                if line is not None:
-                    init_smiles.append(line)
-        # init_smiles = list(set(init_smiles)) 
+                sequence = line.strip()
+                if all(aa in self.alphabet for aa in sequence):
+                    init_sequences.append(sequence)
 
         # check that parameters are valid
         assert (
-            len(init_smiles) >= self.generation_size
+            len(init_sequences) >= self.generation_size
         ), "Initial population smaller than generation size."
         assert (
-            self.top_mols <= self.generation_size
-        ), "Number of top molecules larger than generation size."
-
-        # make fragments from initial smiles
-        self.frag_alphabet = []
-        if self.use_fragments:
-            with multiprocessing.Pool(self.num_workers) as pool:
-                frags = pool.map(form_fragments, init_smiles)
-            frags = self.flatten_list(frags)
-            print(f"    Unique and valid fragments generated: {len(frags)}")
-            self.frag_alphabet.extend(frags)
+            self.top_seqs <= self.generation_size
+        ), "Number of top sequences larger than generation size."
 
         # get initial fitness
-        # with multiprocessing.Pool(self.num_workers) as pool:
-        #     init_fitness = pool.map(self.fitness_function, init_smiles)
-        init_fitness = []
-        for smi in init_smiles:
-            init_fitness.append(self.fitness_function(smi))
+        init_fitness = self.compute_fitness_batch(init_sequences)
 
         # sort the initial population and save in class
         idx = np.argsort(init_fitness)[::-1]
-        init_smiles = np.array(init_smiles)[idx]
+        init_sequences = np.array(init_sequences)[idx]
         init_fitness = np.array(init_fitness)[idx]
-        self.population = init_smiles[: self.generation_size]
+        self.population = init_sequences[: self.generation_size]
         self.fitness = init_fitness[: self.generation_size]
 
-        with open(os.path.join(self.work_dir, "init_mols.txt"), "w") as f:
+        with open(os.path.join(self.work_dir, "init_seqs.txt"), "w") as f:
             f.writelines([f"{x}\n" for x in self.population])
 
         # store in collector, deal with duplicates
-        self.smiles_collector = {}
+        self.sequence_collector = {}
         uniq_pop, idx, counts = np.unique(
             self.population, return_index=True, return_counts=True
         )
-        for smi, count, i in zip(uniq_pop, counts, idx):
-            self.smiles_collector[smi] = [self.fitness[i], count]
+        for seq, count, i in zip(uniq_pop, counts, idx):
+            self.sequence_collector[seq] = [self.fitness[i], count]
 
-    def mutate_smi_list(self, smi_list: List[str], space="local"):
+    def compute_fitness_batch(self, sequences: List[str]) -> List[float]:
+        """Compute fitness for a batch of sequences using Vertex AI pipeline.
+        
+        Args:
+            sequences (List[str]): List of sequences to evaluate
+            
+        Returns:
+            List[float]: Fitness values for each sequence
+        """
+        # Initialize Vertex AI
+        aiplatform.init(
+            project=self.project_id,
+            location=self.location,
+            staging_bucket=f'gs://{self.bucket_name}/staging'
+        )
+
+        storage_client = storage.Client(project=self.project_id)
+        bucket = storage_client.bucket(self.bucket_name)
+
+        # Launch pipeline jobs in parallel
+        pipeline_jobs: Dict[str, Tuple[aiplatform.PipelineJob, str]] = {}
+        
+        print(f"Launching {len(sequences)} Vertex AI pipeline jobs...")
+        # Upload sequences to GCS and track their paths
+        sequence_paths = {}
+        for seq in sequences:
+            # Create unique path for each sequence
+            seq_id = f'peptide_{self.peptide_counter}'
+            gcs_path = f'sequences/{self.experiment_id}/{seq_id}.fasta'
+            
+            # Create multi-chain FASTA content
+            # Chain A is the target protein, Chain B is the peptide
+            fasta_content = f'>A target_protein\n{self.target_sequence}\n>B {seq_id}\n{seq}\n'
+            
+            # Upload to GCS
+            blob = bucket.blob(gcs_path)
+            blob.upload_from_string(fasta_content)
+            
+            # Store full GCS path
+            sequence_paths[seq] = f'gs://{self.bucket_name}/{gcs_path}'
+            self.peptide_counter += 1
+
+            labels = {'experiment_id':self.experiment_id, 'sequence_id': f'seq_id'}
+            # Assume pipeline parameters are configured through a template
+            job = aiplatform.PipelineJob(
+                display_name=self.pipeline_name,
+                template_path=self.pipeline_template_path,
+                pipeline_root=self.pipeline_root_path,
+                parameter_values={
+                    "sequence_path": sequence_paths[seq],
+                    "max_template_date": self.max_template_date,
+                    "project": self.project_id,
+                    "region": self.region,
+                    "use_small_bfd": self.use_small_bfd,
+                    'num_multimer_predictions_per_model': self.num_multimer_predictions_per_model,
+                    'is_run_relax': self.is_run_relax
+                },
+                enable_caching=True,
+                labels=labels
+            )
+            
+            # Submit job
+            job.submit()
+            pipeline_run_name = job.name  # This gets the generated pipeline run name
+            pipeline_jobs[seq] = (job, job.resource_name, pipeline_run_name)
+            print(f"Launched pipeline for sequence {seq} with run name: {pipeline_run_name}")
+            
+        # Monitor jobs and collect results
+        results: Dict[str, float] = {}
+        pending_jobs = set(sequences)
+        
+        print("Waiting for pipeline jobs to complete...")
+        while pending_jobs:
+            completed_seqs = set()
+            
+            for seq in pending_jobs:
+                job, resource_name = pipeline_jobs[seq]
+                
+                # Check job status
+                status = job.state
+                if status.is_completed:
+                    # Job finished successfully
+                    try:
+                        # Get output artifacts/metrics from the pipeline
+                        # This will depend on how your pipeline stores results
+                        output_uri = f'gs://{self.bucket_name}/pipeline_runs/{self.pip}/16853584617/{pipeline_jobs[seq][2]}'
+                        prediction_result = self._download_and_parse_result(output_uri)
+                        feature_dict = self._download_and_parse_result(output_uri)
+                        
+                        # Run fitness function on the AlphaFold2 output
+                        fitness, if_dist_peptide, plddt, unrelaxed_protein = self.fitness_function(seq, 
+                                                                                                   self.receptor_if_residues, 
+                                                                                                   feature_dict, 
+                                                                                                   prediction_result)
+                        results[seq] = fitness
+                        completed_seqs.add(seq)
+                        
+                    except Exception as e:
+                        print(f"Error processing results for sequence {seq}: {e}")
+                        # Assign worst possible fitness on failure
+                        results[seq] = float('-inf')
+                        completed_seqs.add(seq)
+                        
+                elif status.is_failed:
+                    print(f"Pipeline failed for sequence {seq}")
+                    results[seq] = float('-inf')
+                    completed_seqs.add(seq)
+            
+            # Remove completed jobs from pending set
+            pending_jobs -= completed_seqs
+            
+            if pending_jobs:
+                time.sleep(60)  # Wait before checking again
+                
+        # Return results in same order as input sequences
+        return [results[seq] for seq in sequences]
+
+    def _download_and_parse_result(self, output_uri: str):
+        """Download and parse results from GCS.
+        
+        Args:
+            output_uri (str): GCS URI containing pipeline outputs
+                
+        Returns:
+            Dict containing parsed results (either prediction or features)
+        """
+        from google.cloud import storage
+        import pickle
+        import json
+        
+        # Parse bucket and blob path from uri
+        # gs://bucket-name/path/to/file
+        bucket_name = output_uri.split('/')[2]
+        blob_path = '/'.join(output_uri.split('/')[3:])
+        
+        # Download results from GCS
+        storage_client = storage.Client(project=self.project_id)
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        
+        # Download content as bytes
+        content = blob.download_as_bytes()
+        
+        # Parse based on file extension
+        if blob_path.endswith('.json'):
+            result = json.loads(content.decode('utf-8'))
+        elif blob_path.endswith('.pkl'):
+            result = pickle.loads(content)
+        else:
+            raise ValueError(f"Unsupported file format for {blob_path}. Expected .json or .pkl")
+                
+        return result
+
+    def mutate_seq_list(self, seq_list: List[str], space="local"):
         # parallelized mutation function
         if space == "local":
             num_random_samples = self.exploit_num_random_samples
@@ -134,39 +302,36 @@ class JANUS:
         else:
             raise ValueError('Invalid space, choose "local" or "explore".')
 
-        smi_list = smi_list * num_random_samples
+        seq_list = seq_list * num_random_samples
         with multiprocessing.Pool(self.num_workers) as pool:
-            mut_smi_list = pool.map(
+            mut_seq_list = pool.map(
                 partial(
-                    mutate_smiles,
-                    alphabet=self.frag_alphabet,
-                    num_random_samples=1,
+                    mutate_sequence,
                     num_mutations=num_mutations,
-                    num_sample_frags=self.num_sample_frags,
-                    base_alphabet=self.alphabet
+                    valid_amino_acids=self.alphabet
                 ),
-                smi_list,
+                seq_list,
             )
-        mut_smi_list = self.flatten_list(mut_smi_list)
-        return mut_smi_list
+        mut_seq_list = self.flatten_list(mut_seq_list)
+        return mut_seq_list
 
-    def crossover_smi_list(self, smi_list: List[str]):
+    def crossover_seq_list(self, seq_list: List[str]):
         # parallelized crossover function
         with multiprocessing.Pool(self.num_workers) as pool:
-            cross_smi = pool.map(
+            cross_seq = pool.map(
                 partial(
-                    crossover_smiles,
+                    crossover_sequences,
                     crossover_num_random_samples=self.crossover_num_random_samples,
                 ),
-                smi_list,
+                seq_list,
             )
-        cross_smi = self.flatten_list(cross_smi)
-        return cross_smi
+        cross_seq = self.flatten_list(cross_seq)
+        return cross_seq
 
-    def check_filters(self, smi_list: List[str]):
+    def check_filters(self, seq_list: List[str]):
         if self.custom_filter is not None:
-            smi_list = [smi for smi in smi_list if self.custom_filter(smi)]
-        return smi_list
+            seq_list = [seq for seq in seq_list if self.custom_filter(seq)]
+        return seq_list
 
     def save_hyperparameters(self):
         hparams = {
@@ -178,9 +343,7 @@ class JANUS:
     def run(self):
         """ Run optimization based on hyperparameters initialized
         """
-
         for gen_ in range(self.generations):
-
             # bookkeeping
             if self.verbose_out:
                 output_dir = os.path.join(self.work_dir, f"{gen_}_DATA")
@@ -189,91 +352,71 @@ class JANUS:
 
             print(f"On generation {gen_}/{self.generations}")
 
-            keep_smiles, replace_smiles = self.get_good_bad_smiles(
+            keep_seqs, replace_seqs = self.get_good_bad_sequences(
                 self.fitness, self.population, self.generation_size
             )
-            replace_smiles = list(set(replace_smiles))
+            replace_seqs = list(set(replace_seqs))
 
             ### EXPLORATION ###
-            # Mutate and crossover (with keep_smiles) molecules that are meant to be replaced
-            explr_smiles = []
+            explr_seqs = []
             timeout_counter = 0
-            while len(explr_smiles) < self.generation_size-len(keep_smiles):
+            while len(explr_seqs) < self.generation_size-len(keep_seqs):
                 # Mutations:
-                mut_smi_explr = self.mutate_smi_list(
-                    replace_smiles[0 : len(replace_smiles) // 2], space="explore"
+                mut_seq_explr = self.mutate_seq_list(
+                    replace_seqs[0 : len(replace_seqs) // 2], space="explore"
                 )
-                mut_smi_explr = self.check_filters(mut_smi_explr)
+                mut_seq_explr = self.check_filters(mut_seq_explr)
 
                 # Crossovers:
-                smiles_join = []
-                for item in replace_smiles[len(replace_smiles) // 2 :]:
-                    smiles_join.append(item + "xxx" + random.choice(keep_smiles))
-                cross_smi_explr = self.crossover_smi_list(smiles_join)
-                cross_smi_explr = self.check_filters(cross_smi_explr)
+                seq_join = []
+                for item in replace_seqs[len(replace_seqs) // 2 :]:
+                    seq_join.append(item + "xxx" + random.choice(keep_seqs))
+                cross_seq_explr = self.crossover_seq_list(seq_join)
+                cross_seq_explr = self.check_filters(cross_seq_explr)
 
-                # Combine and get unique smiles not yet found
-                all_smiles = list(set(mut_smi_explr + cross_smi_explr))
-                for x in all_smiles:
-                    if x not in self.smiles_collector:
-                        explr_smiles.append(x)
-                explr_smiles = list(set(explr_smiles))
+                # Combine and get unique sequences not yet found
+                all_seqs = list(set(mut_seq_explr + cross_seq_explr))
+                for x in all_seqs:
+                    if x not in self.sequence_collector:
+                        explr_seqs.append(x)
+                explr_seqs = list(set(explr_seqs))
 
                 timeout_counter += 1
                 if timeout_counter % 100 == 0:
                     print(f'Exploration: {timeout_counter} iterations of filtering. \
                     Filter may be too strict, or you need more mutations/crossovers.')
 
-            # Replace the molecules with ones in exploration mutation/crossover
-            if not self.use_classifier or gen_ == 0:
-                replaced_pop = random.sample(
-                    explr_smiles, self.generation_size - len(keep_smiles)
-                )
-            else:
-                # The sampling needs to be done by the neural network!
-                print("    Training classifier neural net...")
-                train_smiles, targets = [], []
-                for item in self.smiles_collector:
-                    train_smiles.append(item)
-                    targets.append(self.smiles_collector[item][0])
-                net = create_and_train_network(
-                    train_smiles,
-                    targets,
-                    num_workers=self.num_workers,
-                    use_gpu=self.use_gpu,
-                )
+            replaced_pop = random.sample(
+                explr_seqs, self.generation_size - len(keep_seqs)
+            )
 
-                # Obtain predictions on unseen molecules:
-                print("    Obtaining Predictions")
-                new_predictions = obtain_model_pred(
-                    explr_smiles,
-                    net,
-                    num_workers=self.num_workers,
-                    use_gpu=self.use_gpu,
-                )
-                sorted_idx = np.argsort(np.squeeze(new_predictions))[::-1]
-                replaced_pop = np.array(explr_smiles)[
-                    sorted_idx[: self.generation_size - len(keep_smiles)]
-                ].tolist()
 
             # Calculate actual fitness for the exploration population
-            self.population = keep_smiles + replaced_pop
-            self.fitness = []
-            for smi in self.population:
-                if smi in self.smiles_collector:
-                    # if already calculated, use the value from smiles collector
-                    self.fitness.append(self.smiles_collector[smi][0])
-                    self.smiles_collector[smi][1] += 1
-                else:
-                    # make a calculation
-                    f = self.fitness_function(smi)
-                    self.fitness.append(f)
-                    self.smiles_collector[smi] = [f, 1]
+            self.population = keep_seqs + replaced_pop
 
+            # Replace individual fitness calls with batched version
+            sequences_to_evaluate = []
+            self.fitness = []
+            for seq in self.population:
+                if seq not in self.sequence_collector:
+                    sequences_to_evaluate.append(seq)
+                else:
+                    self.sequence_collector[seq][1] += 1
+            
+            if sequences_to_evaluate:
+                # Batch evaluate fitness using Vertex AI
+                batch_fitness = self.compute_fitness_batch(sequences_to_evaluate)
+                
+                # Update sequence collector and fitness list
+                for seq, fitness in zip(sequences_to_evaluate, batch_fitness):
+                    self.sequence_collector[seq] = [fitness, 1]
+                    
+            self.fitness.extend([self.sequence_collector[seq][0] for seq in self.population])
+            
             # Print exploration data
             idx_sort = np.argsort(self.fitness)[::-1]
             print(f"    (Explr) Top Fitness: {self.fitness[idx_sort[0]]}")
-            print(f"    (Explr) Top Smile: {self.population[idx_sort[0]]}")
+            print(f"    (Explr) Top Sequence: {self.population[idx_sort[0]]}")
 
             fitness_sort = np.array(self.fitness)[idx_sort]
             if self.verbose_out:
@@ -290,7 +433,6 @@ class JANUS:
                     f.writelines(["{} ".format(x) for x in fitness_sort])
                     f.writelines(["\n"])
 
-            # this population is sort by modified fitness, if active
             population_sort = np.array(self.population)[idx_sort]
             if self.verbose_out:
                 with open(
@@ -309,18 +451,16 @@ class JANUS:
                     f.writelines(["\n"])
 
             ### EXPLOITATION ###
-            # Conduct local search on top-n molecules from population, mutate and do similarity search
-            exploit_smiles = []
+            exploit_seqs = []
             timeout_counter = 0
-            while len(exploit_smiles) < self.generation_size:
-                smiles_local_search = population_sort[0 : self.top_mols].tolist()
-                mut_smi_loc = self.mutate_smi_list(smiles_local_search, "local")
-                mut_smi_loc = self.check_filters(mut_smi_loc)
+            while len(exploit_seqs) < self.generation_size:
+                seq_local_search = population_sort[0 : self.top_seqs].tolist()
+                mut_seq_loc = self.mutate_seq_list(seq_local_search, "local")
+                mut_seq_loc = self.check_filters(mut_seq_loc)
 
-                # filter out molecules already found
-                for x in mut_smi_loc:
-                    if x not in self.smiles_collector:
-                        exploit_smiles.append(x)
+                for x in mut_seq_loc:
+                    if x not in self.sequence_collector:
+                        exploit_seqs.append(x)
 
                 timeout_counter += 1
                 if timeout_counter % 100 == 0:
@@ -328,27 +468,32 @@ class JANUS:
                     Filter may be too strict, or you need more mutations/crossovers.')
 
             # sort by similarity, only keep ones similar to best
-            fp_scores = get_fp_scores(exploit_smiles, population_sort[0])
-            fp_sort_idx = np.argsort(fp_scores)[::-1][: self.generation_size]
-            # highest fp_score idxs
-            self.population_loc = np.array(exploit_smiles)[
-                fp_sort_idx
-            ]  # list of smiles with highest fp scores
+            similarity_scores = get_sequence_similarity(exploit_seqs, population_sort[0])
+            sim_sort_idx = np.argsort(similarity_scores)[::-1][: self.generation_size]
+            self.population_loc = np.array(exploit_seqs)[sim_sort_idx]
 
-            # STEP 4: CALCULATE THE FITNESS FOR THE LOCAL SEARCH:
-            # Exploitation data generated from similarity search is measured with fitness function
+            # Calculate fitness for local search
+            sequences_to_evaluate = []
             self.fitness_loc = []
-            for smi in self.population_loc:
-                f = self.fitness_function(smi)
-                self.fitness_loc.append(f)
-                self.smiles_collector[smi] = [f, 1]
+            for seq in self.population_loc:
+                if seq not in self.sequence_collector:
+                    sequences_to_evaluate.append(seq)
+                else:
+                    self.sequence_collector[seq][1] += 1
+            
+            if sequences_to_evaluate:
+                # Batch evaluate fitness using Vertex AI
+                batch_fitness = self.compute_fitness_batch(sequences_to_evaluate)
+                
+                # Update sequence collector and fitness list
+                for seq, fitness in zip(sequences_to_evaluate, batch_fitness):
+                    self.sequence_collector[seq] = [fitness, 1]
+                    
+            self.fitness_loc.extend([self.sequence_collector[seq][0] for seq in self.population_loc])
 
-            # List of original local fitness scores
-            idx_sort = np.argsort(self.fitness_loc)[
-                ::-1
-            ]  # index of highest to lowest fitness scores
+            idx_sort = np.argsort(self.fitness_loc)[::-1]
             print(f"    (Local) Top Fitness: {self.fitness_loc[idx_sort[0]]}")
-            print(f"    (Local) Top Smile: {self.population_loc[idx_sort[0]]}")
+            print(f"    (Local) Top Sequence: {self.population_loc[idx_sort[0]]}")
 
             fitness_sort = np.array(self.fitness_loc)[idx_sort]
             if self.verbose_out:
@@ -386,29 +531,21 @@ class JANUS:
                     f.writelines(["{} ".format(x) for x in population_sort])
                     f.writelines(["\n"])
 
-            # STEP 5: EXCHANGE THE POPULATIONS:
-            # Introduce changes to 'fitness' & 'population'
-            best_smi_local = population_sort[0 : self.num_exchanges]
+            # Exchange populations
+            best_seq_local = population_sort[0 : self.num_exchanges]
             best_fitness_local = fitness_sort[0 : self.num_exchanges]
 
-            # But will print the best fitness values in file
-            idx_sort = np.argsort(self.fitness)[
-                ::-1
-            ]  # sorted indices for the entire population
-            worst_indices = idx_sort[
-                -self.num_exchanges :
-            ]  # replace worst ones with the best ones
+            idx_sort = np.argsort(self.fitness)[::-1]
+            worst_indices = idx_sort[-self.num_exchanges :]
             for i, idx in enumerate(worst_indices):
                 try:
-                    self.population[idx] = best_smi_local[i]
+                    self.population[idx] = best_seq_local[i]
                     self.fitness[idx] = best_fitness_local[i]
                 except:
                     continue
 
-            # Save best of generation!:
+            # Save best of generation
             fit_all_best = np.argmax(self.fitness)
-
-            # write best molecule with best fitness
             with open(
                 os.path.join(self.work_dir, "generation_all_best.txt"), "a+"
             ) as f:
@@ -419,35 +556,16 @@ class JANUS:
         return
 
     @staticmethod
-    def get_good_bad_smiles(fitness, population, generation_size):
+    def get_good_bad_sequences(fitness, population, generation_size):
         """
-        Given fitness values of all SMILES in population, and the generation size, 
-        this function smplits  the population into two lists: keep_smiles & replace_smiles. 
-        
-        Parameters
-        ----------
-        fitness : (list of floats)
-            List of floats representing properties for molecules in population.
-        population : (list of SMILES)
-            List of all SMILES in each generation.
-        generation_size : (int)
-            Number of molecules in each generation.
-
-        Returns
-        -------
-        keep_smiles : (list of SMILES)
-            A list of SMILES that will be untouched for the next generation. .
-        replace_smiles : (list of SMILES)
-            A list of SMILES that will be mutated/crossed-oved for forming the subsequent generation.
-
+        Split population into sequences to keep and sequences to replace
+        based on fitness values.
         """
-
         fitness = np.array(fitness)
-        idx_sort = fitness.argsort()[::-1]  # Best -> Worst
+        idx_sort = fitness.argsort()[::-1]
         keep_ratio = 0.2
         keep_idx = int(len(list(idx_sort)) * keep_ratio)
         try:
-
             F_50_val = fitness[idx_sort[keep_idx]]
             F_25_val = np.array(fitness) - F_50_val
             F_25_val = np.array([x for x in F_25_val if x < 0]) + F_50_val
@@ -462,22 +580,22 @@ class JANUS:
                 0 : generation_size - len(to_keep)
             ]
 
-            keep_smiles = [population[i] for i in to_keep]
-            replace_smiles = [population[i] for i in to_replace]
+            keep_seqs = [population[i] for i in to_keep]
+            replace_seqs = [population[i] for i in to_replace]
 
-            best_smi = population[idx_sort[0]]
-            if best_smi not in keep_smiles:
-                keep_smiles.append(best_smi)
-                if best_smi in replace_smiles:
-                    replace_smiles.remove(best_smi)
+            best_seq = population[idx_sort[0]]
+            if best_seq not in keep_seqs:
+                keep_seqs.append(best_seq)
+                if best_seq in replace_seqs:
+                    replace_seqs.remove(best_seq)
 
-            if keep_smiles == [] or replace_smiles == []:
+            if keep_seqs == [] or replace_seqs == []:
                 raise Exception("Badly sampled population!")
         except:
-            keep_smiles = [population[i] for i in idx_sort[:keep_idx]]
-            replace_smiles = [population[i] for i in idx_sort[keep_idx:]]
+            keep_seqs = [population[i] for i in idx_sort[:keep_idx]]
+            replace_seqs = [population[i] for i in idx_sort[keep_idx:]]
 
-        return keep_smiles, replace_smiles
+        return keep_seqs, replace_seqs
 
     def log(self):
         pass
@@ -485,4 +603,3 @@ class JANUS:
     @staticmethod
     def flatten_list(nested_list):
         return [item for sublist in nested_list for item in sublist]
-
