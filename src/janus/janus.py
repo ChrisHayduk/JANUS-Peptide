@@ -208,7 +208,7 @@ class JANUS:
             )
             
             # Submit job
-            job.submit()
+            job.run(sync=False)
             pipeline_run_name = job.name  # This gets the generated pipeline run name
             pipeline_jobs[seq] = (job, job.resource_name, pipeline_run_name)
             print(f"Launched pipeline for sequence {seq} with run name: {pipeline_run_name}")
