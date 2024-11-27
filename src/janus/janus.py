@@ -103,7 +103,7 @@ class JANUS:
         os.environ['PARALLELISM'] = '20'
 
         # create dump folder
-        if not os.path.isdir(f"./{self.work_dir}"):
+        if not os.path.isdir(f"{self.work_dir}"):
             os.mkdir(f"{self.work_dir}")
         self.save_hyperparameters()
 
