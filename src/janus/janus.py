@@ -187,12 +187,20 @@ class JANUS:
             sequence_paths[seq] = f'gs://{self.bucket_name}/{gcs_path}'
             self.peptide_counter += 1
 
+            # Create unique path for each sequence
+            timestamp = int(time.time() * 1000)  # millisecond timestamp
+            random_suffix = ''.join(random.choices('0123456789abcdef', k=6))  # random hex string
+
+            # Create unique job ID for each pipeline
+            job_id = f'alphafold-multimer-{timestamp}-{random_suffix}'
+
             labels = {'experiment_id': f'{self.experiment_id}_{self.peptide_counter}', 'sequence_id': f'{seq_id}'}
             # Assume pipeline parameters are configured through a template
             job = aiplatform.PipelineJob(
                 display_name=self.pipeline_name,
                 template_path=self.pipeline_template_path,
                 pipeline_root=self.pipeline_root_path,
+                job_id=job_id,
                 parameter_values={
                     "sequence_path": sequence_paths[seq],
                     "max_template_date": self.max_template_date,
@@ -208,7 +216,7 @@ class JANUS:
             )
             
             # Submit job
-            job.run(sync=False)
+            job.submit()
             pipeline_run_name = job.name  # This gets the generated pipeline run name
             pipeline_jobs[seq] = (job, job.resource_name, pipeline_run_name)
             print(f"Launched pipeline for sequence {seq} with run name: {pipeline_run_name}")
