@@ -153,7 +153,7 @@ class JANUS:
         # Initialize Vertex AI
         aiplatform.init(
             project=self.project_id,
-            location=self.location,
+            location=self.region,
             staging_bucket=f'gs://{self.bucket_name}/staging'
         )
 
@@ -230,12 +230,12 @@ class JANUS:
                             break
                     # Job finished successfully
                     try:
-                        base_uri = f'gs://{self.bucket_name}/pipeline_runs/{self.pip}/16853584617/{pipeline_jobs[seq][2]}'
+                        base_uri = f'gs://{self.bucket_name}/pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}'
                         
                         # List all predict_* directories
                         storage_client = storage.Client(project=self.project_id)
                         bucket = storage_client.bucket(self.bucket_name)
-                        predict_dirs = [b.name for b in bucket.list_blobs(prefix=f"pipeline_runs/{self.pip}/16853584617/{pipeline_jobs[seq][2]}/")
+                        predict_dirs = [b.name for b in bucket.list_blobs(prefix=f"pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}/")
                                     if b.name.split('/')[-2].startswith('predict_')]
                         
                         # Find prediction with highest ranking confidence
