@@ -31,7 +31,7 @@ class JANUS:
         start_population: str,
         target_sequence: str,
         project_id: str,
-        region: str,
+        zone: str,
         pipeline_root_path: str,
         pipeline_template_path: str,
         pipeline_name: str,
@@ -67,7 +67,8 @@ class JANUS:
             self.alphabet = alphabet
 
         self.project_id = project_id
-        self.region = region 
+        self.zone = zone
+        self.region = '-'.join(self.zone.split(sep='-')[:-1]) 
         self.pipeline_name = pipeline_name
         self.pipeline_template_path = pipeline_template_path
         self.pipeline_root_path = pipeline_root_path
