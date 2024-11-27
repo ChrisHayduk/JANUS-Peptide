@@ -53,7 +53,8 @@ class JANUS:
         use_small_bfd: str = "true",
         num_multimer_predictions_per_model: int = 1,
         is_run_relax: str = "",
-        max_template_date = '2030-01-01'
+        max_template_date = '2030-01-01',
+        model_names = ['model_5_multimer_v3']
     ):
         # Default amino acid alphabet if none provided
         if alphabet is None:
@@ -75,6 +76,7 @@ class JANUS:
         self.bucket_name = bucket_name
         self.experiment_id = experiment_id
         self.max_template_date = max_template_date
+        self.model_names = model_names
 
         # set all class variables
         self.work_dir = work_dir
@@ -194,7 +196,8 @@ class JANUS:
                     "region": self.region,
                     "use_small_bfd": self.use_small_bfd,
                     'num_multimer_predictions_per_model': self.num_multimer_predictions_per_model,
-                    'is_run_relax': self.is_run_relax
+                    'is_run_relax': self.is_run_relax,
+                    'model_names': self.model_names
                 },
                 enable_caching=True,
                 labels=labels
