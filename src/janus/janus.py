@@ -33,6 +33,7 @@ class JANUS:
         project_id: str,
         region: str,
         pipeline_root_path: str,
+        pipeline_template_path: str,
         pipeline_name: str,
         bucket_name: str,
         experiment_id: str,
@@ -68,7 +69,7 @@ class JANUS:
         self.project_id = project_id
         self.region = region 
         self.pipeline_name = pipeline_name
-        self.pipeline_template_path = f'{self.pipeline_name}.json'
+        self.pipeline_template_path = pipeline_template_path
         self.pipeline_root_path = pipeline_root_path
         self.use_small_bfd = use_small_bfd
         self.num_multimer_predictions_per_model = num_multimer_predictions_per_model
@@ -98,6 +99,8 @@ class JANUS:
 
         self.peptide_counter = 1
         self.target_sequence = target_sequence
+
+        os.environ['PARALLELISM'] = '20'
 
         # create dump folder
         if not os.path.isdir(f"./{self.work_dir}"):
