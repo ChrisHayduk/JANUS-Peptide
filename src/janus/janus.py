@@ -10,6 +10,7 @@ from google.cloud import storage
 import time
 from typing import Dict, List, Tuple
 import concurrent.futures
+import json
 
 import numpy as np
 from Bio import pairwise2
@@ -230,7 +231,7 @@ class JANUS:
             completed_seqs = set()
             
             for seq in pending_jobs:
-                job, resource_name = pipeline_jobs[seq]
+                job, resource_name, pipeline_run_name = pipeline_jobs[seq]  # Unpack all three values
                 
                 # Check job status
                 status = job.state
@@ -238,7 +239,9 @@ class JANUS:
                     tasks = job.get_tasks()
                     for task in tasks:
                         if task.display_name == 'Create unique run ID':
-                            features_dir = task.outputs['output']  # This will be the GCS path
+                            output = task.outputs['output']  # This will be the GCS path
+                            values = json.loads(output)
+                            features_dir = values['full_protein']
                             break
                     # Job finished successfully
                     try:
@@ -253,7 +256,6 @@ class JANUS:
                         # Find prediction with highest ranking confidence
                         max_confidence = float('-inf')
                         best_prediction_path = None
-                        best_features_path = None
                         
                         for predict_dir in predict_dirs:
                             # Get the executor output JSON
