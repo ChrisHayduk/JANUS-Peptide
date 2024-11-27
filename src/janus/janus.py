@@ -104,7 +104,7 @@ class JANUS:
 
         # create dump folder
         if not os.path.isdir(f"./{self.work_dir}"):
-            os.mkdir(f"./{self.work_dir}")
+            os.mkdir(f"{self.work_dir}")
         self.save_hyperparameters()
 
         # get initial population
