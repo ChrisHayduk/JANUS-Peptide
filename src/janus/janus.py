@@ -187,7 +187,7 @@ class JANUS:
             sequence_paths[seq] = f'gs://{self.bucket_name}/{gcs_path}'
             self.peptide_counter += 1
 
-            labels = {'experiment_id':self.experiment_id, 'sequence_id': f'seq_id'}
+            labels = {'experiment_id': f'{self.experiment_id}_{self.peptide_counter}', 'sequence_id': f'{seq_id}'}
             # Assume pipeline parameters are configured through a template
             job = aiplatform.PipelineJob(
                 display_name=self.pipeline_name,
