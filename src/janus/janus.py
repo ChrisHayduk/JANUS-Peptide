@@ -235,7 +235,8 @@ class JANUS:
                 
                 # Check job status
                 status = job.state
-                if status.is_completed:
+                print("Status: ", status)
+                if status == 'PIPELINE_STATE_SUCCEEDED':
                     tasks = job.get_tasks()
                     for task in tasks:
                         if task.display_name == 'Create unique run ID':
@@ -296,7 +297,7 @@ class JANUS:
                         results[seq] = float('-inf')
                         completed_seqs.add(seq)
                         
-                elif status.is_failed:
+                elif status == "PIPELINE_STATE_FAILED":
                     print(f"Pipeline failed for sequence {seq}")
                     results[seq] = float('-inf')
                     completed_seqs.add(seq)
