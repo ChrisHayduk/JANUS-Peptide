@@ -12,6 +12,11 @@ from typing import Dict, List, Tuple
 import concurrent.futures
 import json
 
+from google.cloud.aiplatform.compat.types import (
+    pipeline_job as gca_pipeline_job,
+    pipeline_state as gca_pipeline_state,
+)
+
 import numpy as np
 from Bio import pairwise2
 from Bio.SubsMat import MatrixInfo as matlist
@@ -237,7 +242,7 @@ class JANUS:
                 status = job.state
                 print(f"Status for sequence {seq}: {status}")
                 
-                if status == 'PipelineState.PIPELINE_STATE_SUCCEEDED':
+                if status == gca_pipeline_state.PipelineState.PIPELINE_STATE_SUCCEEDED:
                     tasks = job.get_tasks()
                     for task in tasks:
                         if task.display_name == 'Create unique run ID':
@@ -299,25 +304,25 @@ class JANUS:
                         results[seq] = float('-inf')
                         completed_seqs.add(seq)
                 
-                elif status == 'PipelineState.PIPELINE_STATE_FAILED':
+                elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_FAILED:
                     print(f"Pipeline failed for sequence {seq}")
                     results[seq] = float('-inf')
                     completed_seqs.add(seq)
                 
-                elif status == 'PipelineState.PIPELINE_STATE_CANCELLED':
+                elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_CANCELLED:
                     print(f"Pipeline cancelled for sequence {seq}")
                     results[seq] = float('-inf')
                     completed_seqs.add(seq)
                 
-                elif status == 'PipelineState.PIPELINE_STATE_PAUSED':
+                elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_PAUSED:
                     print(f"Pipeline paused for sequence {seq}")
                     # Don't mark as completed, will check again next iteration
                 
-                elif status == 'PipelineState.PIPELINE_STATE_QUEUED':
+                elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_QUEUED:
                     print(f"Pipeline queued for sequence {seq}")
                     # Don't mark as completed, will check again next iteration
                 
-                elif status == 'PipelineState.PIPELINE_STATE_RUNNING':
+                elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_RUNNING:
                     print(f"Pipeline still running for sequence {seq}")
                     # Don't mark as completed, will check again next iteration
                 
