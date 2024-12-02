@@ -20,6 +20,7 @@ from .mutate import mutate_sequence
 from .crossover import crossover_sequences
 from .utils import get_sequence_similarity
 from .fitness import fitness_function
+from google.cloud.aiplatform.pipeline_jobs import PipelineState
 
 class JANUS:
     """ JANUS class for genetic algorithm applied on amino acid sequences.
@@ -237,7 +238,7 @@ class JANUS:
                 status = job.state
                 print(f"Status for sequence {seq}: {status}")
                 
-                if status == aiplatform.PipelineState.PIPELINE_STATE_SUCCEEDED:
+                if status == PipelineState.PIPELINE_STATE_SUCCEEDED:
                     tasks = job.get_tasks()
                     for task in tasks:
                         if task.display_name == 'Create unique run ID':
@@ -299,25 +300,25 @@ class JANUS:
                         results[seq] = float('-inf')
                         completed_seqs.add(seq)
                 
-                elif status == aiplatform.PipelineState.PIPELINE_STATE_FAILED:
+                elif status == PipelineState.PIPELINE_STATE_FAILED:
                     print(f"Pipeline failed for sequence {seq}")
                     results[seq] = float('-inf')
                     completed_seqs.add(seq)
                 
-                elif status == aiplatform.PipelineState.PIPELINE_STATE_CANCELLED:
+                elif status == PipelineState.PIPELINE_STATE_CANCELLED:
                     print(f"Pipeline cancelled for sequence {seq}")
                     results[seq] = float('-inf')
                     completed_seqs.add(seq)
                 
-                elif status == aiplatform.PipelineState.PIPELINE_STATE_PAUSED:
+                elif status == PipelineState.PIPELINE_STATE_PAUSED:
                     print(f"Pipeline paused for sequence {seq}")
                     # Don't mark as completed, will check again next iteration
                 
-                elif status == aiplatform.PipelineState.PIPELINE_STATE_QUEUED:
+                elif status == PipelineState.PIPELINE_STATE_QUEUED:
                     print(f"Pipeline queued for sequence {seq}")
                     # Don't mark as completed, will check again next iteration
                 
-                elif status == aiplatform.PipelineState.PIPELINE_STATE_RUNNING:
+                elif status == PipelineState.PIPELINE_STATE_RUNNING:
                     print(f"Pipeline still running for sequence {seq}")
                     # Don't mark as completed, will check again next iteration
                 
