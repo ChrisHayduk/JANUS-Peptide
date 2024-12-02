@@ -235,8 +235,9 @@ class JANUS:
                 
                 # Check job status
                 status = job.state
-                print("Status: ", status)
-                if status == 'PIPELINE_STATE_SUCCEEDED':
+                print(f"Status for sequence {seq}: {status}")
+                
+                if status == aiplatform.PipelineState.PIPELINE_STATE_SUCCEEDED:
                     tasks = job.get_tasks()
                     for task in tasks:
                         if task.display_name == 'Create unique run ID':
@@ -290,22 +291,45 @@ class JANUS:
                         )
                         results[seq] = fitness
                         completed_seqs.add(seq)
+                        print(f"Successfully processed sequence {seq} with fitness {fitness}")
                         
                     except Exception as e:
                         print(f"Error processing results for sequence {seq}: {e}")
                         # Assign worst possible fitness on failure
                         results[seq] = float('-inf')
                         completed_seqs.add(seq)
-                        
-                elif status == "PIPELINE_STATE_FAILED":
+                
+                elif status == aiplatform.PipelineState.PIPELINE_STATE_FAILED:
                     print(f"Pipeline failed for sequence {seq}")
                     results[seq] = float('-inf')
                     completed_seqs.add(seq)
+                
+                elif status == aiplatform.PipelineState.PIPELINE_STATE_CANCELLED:
+                    print(f"Pipeline cancelled for sequence {seq}")
+                    results[seq] = float('-inf')
+                    completed_seqs.add(seq)
+                
+                elif status == aiplatform.PipelineState.PIPELINE_STATE_PAUSED:
+                    print(f"Pipeline paused for sequence {seq}")
+                    # Don't mark as completed, will check again next iteration
+                
+                elif status == aiplatform.PipelineState.PIPELINE_STATE_QUEUED:
+                    print(f"Pipeline queued for sequence {seq}")
+                    # Don't mark as completed, will check again next iteration
+                
+                elif status == aiplatform.PipelineState.PIPELINE_STATE_RUNNING:
+                    print(f"Pipeline still running for sequence {seq}")
+                    # Don't mark as completed, will check again next iteration
+                
+                else:
+                    print(f"Unknown pipeline state {status} for sequence {seq}")
+                    # Don't mark as completed, will check again next iteration
 
             # Remove completed jobs from pending set
             pending_jobs -= completed_seqs
             
             if pending_jobs:
+                print(f"Waiting for {len(pending_jobs)} jobs to complete...")
                 time.sleep(60)  # Wait before checking again
                 
         # Return results in same order as input sequences
