@@ -243,14 +243,16 @@ class JANUS:
                 print(f"Status for sequence {seq}: {status}")
                 
                 if status == gca_pipeline_state.PipelineState.PIPELINE_STATE_SUCCEEDED:
-                    tasks = job.get_tasks()
-                    for task in tasks:
-                        if task.display_name == 'Create unique run ID':
-                            output = task.outputs['output']  # This will be the GCS path
-                            values = json.loads(output)
-                            features_dir = values['full_protein']
-                            break
-                    # Job finished successfully
+                    pipeline_outputs = job.output
+                    print("Available output keys:", pipeline_outputs.keys())
+
+                    # Find the output from 'Create unique run ID' task
+                    run_id_output = pipeline_outputs['create_unique_run_id']  # Adjust key name based on your pipeline
+                    values = json.loads(run_id_output)
+                    features_dir = values['full_protein']
+
+                    print(f"Features directory for sequence {seq}: {features_dir}")
+                    
                     try:
                         base_uri = f'gs://{self.bucket_name}/pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}'
                         
