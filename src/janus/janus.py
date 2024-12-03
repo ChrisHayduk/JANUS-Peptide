@@ -250,10 +250,12 @@ class JANUS:
                         
                     # Iterate over task details to find the task with the desired output
                     for task in task_details:
-                        if task.task_name == 'Create unique run ID':  # Adjust the task name as needed
-                            output = task.execution.metadata['output']  # This will be the GCS path
+                        if task.task_name == 'Create unique run ID' or task.task_name == 'create-run-id' or task.task_name == 'create_run_id':
+                            output = task.execution.metadata['output']
                             values = json.loads(output)
                             features_dir = values['full_protein']
+
+                            print(f'Found task {task.name} with output dir {features_dir}')
                             break
 
                     print(f"Features directory for sequence {seq}: {features_dir}")
