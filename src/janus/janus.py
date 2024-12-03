@@ -243,13 +243,18 @@ class JANUS:
                 print(f"Status for sequence {seq}: {status}")
                 
                 if status == gca_pipeline_state.PipelineState.PIPELINE_STATE_SUCCEEDED:
-                    pipeline_outputs = job.output
-                    print("Available output keys:", pipeline_outputs.keys())
+                    print(f"Pipeline suceeded for sequence {seq}")
 
-                    # Find the output from 'Create unique run ID' task
-                    run_id_output = pipeline_outputs['create_unique_run_id']  # Adjust key name based on your pipeline
-                    values = json.loads(run_id_output)
-                    features_dir = values['full_protein']
+                    # Access task details to find the output of the specific task
+                    task_details = job.task_details
+                        
+                    # Iterate over task details to find the task with the desired output
+                    for task in task_details:
+                        if task.task_name == 'Create unique run ID':  # Adjust the task name as needed
+                            output = task.execution.metadata['output']  # This will be the GCS path
+                            values = json.loads(output)
+                            features_dir = values['full_protein']
+                            break
 
                     print(f"Features directory for sequence {seq}: {features_dir}")
                     
