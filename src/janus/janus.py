@@ -247,16 +247,20 @@ class JANUS:
 
                     # Access task details to find the output of the specific task
                     task_details = job.task_details
+
+                    features_dir = ""
                         
                     # Iterate over task details to find the task with the desired output
                     for task in task_details:
-                        if task.task_name == 'Create unique run ID' or task.task_name == 'create-run-id' or task.task_name == 'create_run_id':
-                            output = task.execution.metadata['output']
-                            values = json.loads(output)
-                            features_dir = values['full_protein']
+                        if task.task_name == 'create-run-id':
 
-                            print(f'Found task {task.name} with output dir {features_dir}')
+                            metadata_dict = dict(task.execution.metadata)
+
+                            output_str = metadata_dict['output:Output']
+                            output_json = json.loads(output_str)
+                            features_dir = output_json['full_protein']
                             break
+
 
                     print(f"Features directory for sequence {seq}: {features_dir}")
                     
@@ -266,8 +270,14 @@ class JANUS:
                         # List all predict_* directories
                         storage_client = storage.Client(project=self.project_id)
                         bucket = storage_client.bucket(self.bucket_name)
-                        predict_dirs = [b.name for b in bucket.list_blobs(prefix=f"pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}/")
-                                    if b.name.split('/')[-2].startswith('predict_')]
+                        prefix=f"pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}/"
+                        
+                        blobs = bucket.list_blobs(prefix=prefix)
+
+                        predict_dirs = list(set(
+                            "/".join(blob.name.split('/')[:-1]) for blob in blobs
+                            if 'predict_' in blob.name and 'executor_output.json' in blob.name
+                        ))
                         
                         # Find prediction with highest ranking confidence
                         max_confidence = float('-inf')

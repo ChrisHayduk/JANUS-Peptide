@@ -1,21 +1,31 @@
 import numpy as np
 import sys
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'alphafold-parallel-msa'))
 
-from alphafold.common import protein
-from alphafold.common import residue_constants
+# Add the custom alphafold-parallel-msa directory to sys.path
+custom_path = os.path.join(os.getcwd(), 'alphafold-parallel-msa', 'alphafold', 'common')
+sys.path.insert(0, custom_path)
+
+from protein import get_coords, from_prediction
+from residue_constants import atom_type_num
 
 def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict, prediction_result: dict) -> float:
+    
+    if receptor_if_residues:
+        receptor_if_residues = np.array(receptor_if_residues, dtype=int)
+    else:
+        print('No target residues provided. Designing towards entire receptor sequence...')
+        receptor_if_residues = np.arange(feature_dict['aatype'].shape[0])
+        
     #Calculate loss
     #Loss features
     # Get the pLDDT confidence metric.
     plddt = prediction_result['plddt']
     #Get the protein
-    plddt_b_factors = np.repeat(plddt[:, None], residue_constants.atom_type_num, axis=-1)
-    unrelaxed_protein = protein.from_prediction(features=feature_dict,result=prediction_result,b_factors=plddt_b_factors)
-
-    protein_resno, protein_atoms, protein_atom_coords = protein.get_coords(unrelaxed_protein)
+    plddt_b_factors = np.repeat(plddt[:, None], atom_type_num, axis=-1)
+    unrelaxed_protein = from_prediction(features=feature_dict,result=prediction_result,b_factors=plddt_b_factors,remove_leading_feature_dimension=False)
+    
+    protein_resno, protein_atoms, protein_atom_coords = get_coords(unrelaxed_protein)
     peptide_length = len(peptide)
     #Get residue index
     residue_index = feature_dict['residue_index']
