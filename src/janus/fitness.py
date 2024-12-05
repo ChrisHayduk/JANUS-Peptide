@@ -52,6 +52,11 @@ def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict
     a_min_b = mat[:,np.newaxis,:] -mat[np.newaxis,:,:]
     dists = np.sqrt(np.sum(a_min_b.T ** 2, axis=0)).T
     l1 = len(peptide_coords)
+    
+    print(f'mat: {mat}')
+    print(f'a_min_b: {a_min_b}')
+    print(f'dists: {dists}')
+    
     #Get interface
     contact_dists = dists[:l1,l1:] #first dimension = peptide, second = receptor
 
@@ -60,7 +65,9 @@ def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict
 
     #Get the peptide plDDT
     peptide_plDDT = plddt[-peptide_length:]
-
+    
+    print(f'contact_dists: {contact_dists}')
+    print(f'closest_dists_peptide: {closest_dists_peptide}')
     print(f'peptide plDDT: {peptide_plDDT}')
 
     if_dist_peptide = closest_dists_peptide.mean()
