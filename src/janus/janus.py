@@ -11,6 +11,7 @@ import time
 from typing import Dict, List, Tuple
 import concurrent.futures
 import json
+import math
 
 from google.cloud.aiplatform.compat.types import (
     pipeline_job as gca_pipeline_job,
@@ -221,7 +222,7 @@ class JANUS:
                     'is_run_relax': self.is_run_relax,
                     'model_names': self.model_names
                 },
-                enable_caching=True,
+                enable_caching=False,
                 labels=labels
             )
             
@@ -672,7 +673,8 @@ class JANUS:
         fitness = np.array(fitness)
         idx_sort = fitness.argsort()[::-1]
         keep_ratio = 0.2
-        keep_idx = int(len(list(idx_sort)) * keep_ratio)
+        keep_idx = math.ceil(len(list(idx_sort)) * keep_ratio)
+
         try:
             F_50_val = fitness[idx_sort[keep_idx]]
             F_25_val = np.array(fitness) - F_50_val
