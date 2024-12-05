@@ -61,7 +61,8 @@ class JANUS:
         num_multimer_predictions_per_model: int = 1,
         is_run_relax: str = "",
         max_template_date = '2030-01-01',
-        model_names = ['model_5_multimer_v3']
+        model_names = ['model_5_multimer_v3'],
+        receptor_if_residues: str = ''
     ):
         # Default amino acid alphabet if none provided
         if alphabet is None:
@@ -106,6 +107,8 @@ class JANUS:
 
         self.peptide_counter = 1
         self.target_sequence = target_sequence
+        
+        self.receptor_if_residues = receptor_if_residues
 
         os.environ['PARALLELISM'] = '20'
 
@@ -121,7 +124,8 @@ class JANUS:
                 sequence = line.strip()
                 if all(aa in self.alphabet for aa in sequence):
                     init_sequences.append(sequence)
-
+        
+        print(init_sequences)
         # check that parameters are valid
         assert (
             len(init_sequences) >= self.generation_size
