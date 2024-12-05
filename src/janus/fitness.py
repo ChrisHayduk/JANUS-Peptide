@@ -61,6 +61,8 @@ def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict
     #Get the peptide plDDT
     peptide_plDDT = plddt[-peptide_length:]
 
+    print(f'peptide plDDT: {peptide_plDDT}')
+
     if_dist_peptide = closest_dists_peptide.mean()
     plddt = peptide_plDDT.mean()
 

@@ -321,6 +321,7 @@ class JANUS:
                         results[seq] = fitness
                         completed_seqs.add(seq)
                         print(f"Successfully processed sequence {seq} with fitness {fitness}")
+                        print(f'pLDDT: {plddt}, if_dist_peptide: {if_dist_peptide}')
                         
                     except Exception as e:
                         print(f"Error processing results for sequence {seq}: {e}")
