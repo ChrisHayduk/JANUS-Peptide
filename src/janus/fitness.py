@@ -32,15 +32,15 @@ def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict
     receptor_res_index = residue_index[:-peptide_length]
     peptide_res_index = residue_index[-peptide_length:]
     #Get coords
-    receptor_coords = protein_atom_coords[np.argwhere(protein_resno<=receptor_res_index[-1]+1)[:,0]]
-    peptide_coords = protein_atom_coords[np.argwhere(protein_resno>receptor_res_index[-1]+1)[:,0]]
+    receptor_coords = protein_atom_coords[:-peptide_length]
+    peptide_coords = protein_atom_coords[-peptide_length:]
     #Get atom types
-    receptor_atoms = protein_atoms[np.argwhere(protein_resno<=receptor_res_index[-1]+1)[:,0]]
-    peptide_atoms = protein_atoms[np.argwhere(protein_resno>receptor_res_index[-1]+1)[:,0]]
+    receptor_atoms = protein_atoms[:-peptide_length]
+    peptide_atoms = protein_atoms[-peptide_length:]
     #Get resno for each atom
     #Start at 1 - same for receptor_if_residues
-    receptor_resno = protein_resno[np.argwhere(protein_resno<=receptor_res_index[-1]+1)[:,0]]
-    peptide_resno = protein_resno[np.argwhere(protein_resno>peptide_res_index[0])[:,0]]
+    receptor_resno = protein_resno[:-peptide_length]
+    peptide_resno = protein_resno[-peptide_length:]
     #Get atoms belonging to if res for the receptor
     receptor_if_pos = []
     for ifr in receptor_if_residues:
@@ -52,11 +52,7 @@ def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict
     a_min_b = mat[:,np.newaxis,:] -mat[np.newaxis,:,:]
     dists = np.sqrt(np.sum(a_min_b.T ** 2, axis=0)).T
     l1 = len(peptide_coords)
-    
-    print(f'mat: {mat}')
-    print(f'a_min_b: {a_min_b}')
-    print(f'dists: {dists}')
-    
+
     #Get interface
     contact_dists = dists[:l1,l1:] #first dimension = peptide, second = receptor
 
@@ -65,10 +61,6 @@ def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict
 
     #Get the peptide plDDT
     peptide_plDDT = plddt[-peptide_length:]
-    
-    print(f'contact_dists: {contact_dists}')
-    print(f'closest_dists_peptide: {closest_dists_peptide}')
-    print(f'peptide plDDT: {peptide_plDDT}')
 
     if_dist_peptide = closest_dists_peptide.mean()
     plddt = peptide_plDDT.mean()
