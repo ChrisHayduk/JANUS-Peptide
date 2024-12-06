@@ -46,7 +46,7 @@ class JANUS:
         self,
         work_dir: str,
         start_population: str,
-        target_sequence: List[str],  # List of chains. Singleton list if it is a monomer
+        target_sequence: dict,  # Dictionary of chains
         project_id: str,
         zone: str,
         pipeline_root_path: str,
