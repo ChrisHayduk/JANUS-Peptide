@@ -46,7 +46,7 @@ class JANUS:
         self,
         work_dir: str,
         start_population: str,
-        target_sequence: str,
+        target_sequence: List[str],  # List of chains. Singleton list if it is a monomer
         project_id: str,
         zone: str,
         pipeline_root_path: str,
@@ -120,6 +120,7 @@ class JANUS:
         self.target_sequence = target_sequence
         
         self.receptor_if_residues = receptor_if_residues
+
 
         os.environ['PARALLELISM'] = '20'
 
@@ -206,8 +207,15 @@ class JANUS:
             gcs_path = f'sequences/{self.experiment_id}/{seq_id}.fasta'
             
             # Create multi-chain FASTA content
-            # Chain A is the target protein, Chain B is the peptide
-            fasta_content = f'>A target_protein\n{self.target_sequence}\n>B {seq_id}\n{seq}\n'
+            fasta_content = ""
+            chain_label = ord('A')
+            for c_id, c_seq in self.target_sequence.items():
+                fasta_content += f'>{chr(chain_label)} {c_id}\n{c_seq}\n'
+                chain_label += 1
+
+            # Now add the peptide as the last chain
+            # The peptide chain will be, say, chr(chain_label), e.g. 'Z' or 'D', depending on how many receptor chains you have.
+            fasta_content += f'>{chr(chain_label)} {seq_id}\n{seq}\n'
             
             # Upload to GCS
             blob = bucket.blob(gcs_path)

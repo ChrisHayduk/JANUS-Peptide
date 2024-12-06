@@ -65,6 +65,6 @@ def fitness_function(peptide: str, receptor_if_residues: str, feature_dict: dict
     if_dist_peptide = closest_dists_peptide.mean()
     plddt = peptide_plDDT.mean()
 
-    loss = if_dist_peptide*1/plddt
+    loss = if_dist_peptide / plddt
 
     return loss, if_dist_peptide, plddt, unrelaxed_protein
