@@ -12,7 +12,6 @@ from typing import Dict, List, Tuple
 import concurrent.futures
 import json
 import math
-from dataclasses import dataclass
 
 from google.cloud.aiplatform.compat.types import (
     pipeline_job as gca_pipeline_job,
@@ -28,15 +27,6 @@ from .crossover import crossover_sequences
 from .utils import get_sequence_similarity
 from .fitness import fitness_function
 
-@dataclass
-class PeptideStats:
-    sequence: str
-    fitness: float
-    if_dist_peptide: float
-    plddt: float
-    parent: Optional[str] = None
-    generation: int = 0
-
 class JANUS:
     """ JANUS class for genetic algorithm applied on amino acid sequences.
     See example/example.py for descriptions of parameters
@@ -46,7 +36,7 @@ class JANUS:
         self,
         work_dir: str,
         start_population: str,
-        target_sequence: dict,  # Dictionary of chains
+        target_sequence: str,
         project_id: str,
         zone: str,
         pipeline_root_path: str,
@@ -69,6 +59,7 @@ class JANUS:
         exploit_num_mutations: Optional[int] = 20,
         top_seqs: Optional[int] = 1,
         use_small_bfd: str = "true",
+        skip_msa: str = "true",
         num_multimer_predictions_per_model: int = 1,
         is_run_relax: str = "",
         max_template_date = '2030-01-01',
@@ -91,6 +82,7 @@ class JANUS:
         self.pipeline_template_path = pipeline_template_path
         self.pipeline_root_path = pipeline_root_path
         self.use_small_bfd = use_small_bfd
+        self.skip_msa = skip_msa
         self.num_multimer_predictions_per_model = num_multimer_predictions_per_model
         self.is_run_relax = is_run_relax
         self.bucket_name = bucket_name
@@ -120,7 +112,6 @@ class JANUS:
         self.target_sequence = target_sequence
         
         self.receptor_if_residues = receptor_if_residues
-
 
         os.environ['PARALLELISM'] = '20'
 
@@ -167,16 +158,7 @@ class JANUS:
         for seq, count, i in zip(uniq_pop, counts, idx):
             self.sequence_collector[seq] = [self.fitness[i], count]
 
-        # Add new tracking dictionaries
-        self.peptide_stats = {}  # Dict[str, PeptideStats]
-        self.generation_stats = []  # List of best stats per generation
-        self.best_stats = {
-            'fitness': {'value': float('-inf'), 'sequence': None, 'generation': -1},
-            'if_dist_peptide': {'value': float('inf'), 'sequence': None, 'generation': -1},
-            'plddt': {'value': float('-inf'), 'sequence': None, 'generation': -1}
-        }
-
-    def compute_fitness_batch(self, sequences: List[str], parent_sequences: Dict[str, str] = None, generation: int = 0) -> List[float]:
+    def compute_fitness_batch(self, sequences: List[str]) -> List[float]:
         """Compute fitness for a batch of sequences using Vertex AI pipeline.
         
         Args:
@@ -207,15 +189,8 @@ class JANUS:
             gcs_path = f'sequences/{self.experiment_id}/{seq_id}.fasta'
             
             # Create multi-chain FASTA content
-            fasta_content = ""
-            chain_label = ord('A')
-            for c_id, c_seq in self.target_sequence.items():
-                fasta_content += f'>{chr(chain_label)} {c_id}\n{c_seq}\n'
-                chain_label += 1
-
-            # Now add the peptide as the last chain
-            # The peptide chain will be, say, chr(chain_label), e.g. 'Z' or 'D', depending on how many receptor chains you have.
-            fasta_content += f'>{chr(chain_label)} {seq_id}\n{seq}\n'
+            # Chain A is the target protein, Chain B is the peptide
+            fasta_content = f'>A target_protein\n{self.target_sequence}\n>B {seq_id}\n{seq}\n'
             
             # Upload to GCS
             blob = bucket.blob(gcs_path)
@@ -245,6 +220,7 @@ class JANUS:
                     "project": self.project_id,
                     "region": self.region,
                     "use_small_bfd": self.use_small_bfd,
+                    "skip_msa": self.skip_msa,
                     'num_multimer_predictions_per_model': self.num_multimer_predictions_per_model,
                     'is_run_relax': self.is_run_relax,
                     'model_names': self.model_names
@@ -349,25 +325,6 @@ class JANUS:
                         completed_seqs.add(seq)
                         print(f"Successfully processed sequence {seq} with fitness {fitness}")
                         print(f'pLDDT: {plddt}, if_dist_peptide: {if_dist_peptide}')
-                        
-                        # Store detailed stats for each peptide
-                        stats = PeptideStats(
-                            sequence=seq,
-                            fitness=fitness,
-                            if_dist_peptide=if_dist_peptide,
-                            plddt=plddt,
-                            parent=parent_sequences.get(seq) if parent_sequences else None,
-                            generation=generation
-                        )
-                        self.peptide_stats[seq] = stats
-                        
-                        # Update best stats
-                        if fitness > self.best_stats['fitness']['value']:
-                            self.best_stats['fitness'] = {'value': fitness, 'sequence': seq, 'generation': generation}
-                        if if_dist_peptide < self.best_stats['if_dist_peptide']['value']:
-                            self.best_stats['if_dist_peptide'] = {'value': if_dist_peptide, 'sequence': seq, 'generation': generation}
-                        if plddt > self.best_stats['plddt']['value']:
-                            self.best_stats['plddt'] = {'value': plddt, 'sequence': seq, 'generation': generation}
                         
                     except Exception as e:
                         print(f"Error processing results for sequence {seq}: {e}")
@@ -546,19 +503,11 @@ class JANUS:
                 explr_seqs, self.generation_size - len(keep_seqs)
             )
 
-            # Track parent sequences for mutations and crossovers
-            parent_map = {}
-            for seq in replaced_pop:
-                # For mutations, track the source sequence
-                if seq in mut_seq_explr:
-                    parent_map[seq] = random.choice(replace_seqs[0:len(replace_seqs)//2])
-                # For crossovers, track both parent sequences
-                elif seq in cross_seq_explr:
-                    parent_seqs = [s for s in replace_seqs[len(replace_seqs)//2:] if seq in cross_seq_explr]
-                    if parent_seqs:
-                        parent_map[seq] = f"{parent_seqs[0]}+{random.choice(keep_seqs)}"
 
-            # Pass parent information to fitness calculation
+            # Calculate actual fitness for the exploration population
+            self.population = keep_seqs + replaced_pop
+
+            # Replace individual fitness calls with batched version
             sequences_to_evaluate = []
             self.fitness = []
             for seq in self.population:
@@ -569,7 +518,7 @@ class JANUS:
             
             if sequences_to_evaluate:
                 # Batch evaluate fitness using Vertex AI
-                batch_fitness = self.compute_fitness_batch(sequences_to_evaluate, parent_map)
+                batch_fitness = self.compute_fitness_batch(sequences_to_evaluate)
                 
                 # Update sequence collector and fitness list
                 for seq, fitness in zip(sequences_to_evaluate, batch_fitness):
@@ -647,7 +596,7 @@ class JANUS:
             
             if sequences_to_evaluate:
                 # Batch evaluate fitness using Vertex AI
-                batch_fitness = self.compute_fitness_batch(sequences_to_evaluate, parent_map)
+                batch_fitness = self.compute_fitness_batch(sequences_to_evaluate)
                 
                 # Update sequence collector and fitness list
                 for seq, fitness in zip(sequences_to_evaluate, batch_fitness):
@@ -717,53 +666,7 @@ class JANUS:
                     f"Gen:{gen_}, {self.population[fit_all_best]}, {self.fitness[fit_all_best]} \n"
                 )
 
-            # Store generation statistics
-            gen_best_idx = np.argmax(self.fitness)
-            gen_best_seq = self.population[gen_best_idx]
-            gen_stats = self.peptide_stats[gen_best_seq]
-            self.generation_stats.append(gen_stats)
-
-            # Save statistics to files
-            self._save_generation_stats(gen_)
-
         return
-
-    def _save_generation_stats(self, generation: int):
-        """Save detailed statistics for the current generation."""
-        stats_dir = os.path.join(self.work_dir, "statistics")
-        os.makedirs(stats_dir, exist_ok=True)
-        
-        # Save current generation stats
-        gen_file = os.path.join(stats_dir, f"generation_{generation}_stats.json")
-        gen_stats = {
-            seq: {
-                'fitness': stats.fitness,
-                'if_dist_peptide': stats.if_dist_peptide,
-                'plddt': stats.plddt,
-                'parent': stats.parent
-            }
-            for seq, stats in self.peptide_stats.items()
-            if stats.generation == generation
-        }
-        with open(gen_file, 'w') as f:
-            json.dump(gen_stats, f, indent=2)
-        
-        # Save best stats so far
-        best_file = os.path.join(stats_dir, "best_stats.json")
-        with open(best_file, 'w') as f:
-            json.dump(self.best_stats, f, indent=2)
-        
-        # Save generation progression
-        progression_file = os.path.join(stats_dir, "generation_progression.json")
-        progression = [{
-            'generation': i,
-            'sequence': stats.sequence,
-            'fitness': stats.fitness,
-            'if_dist_peptide': stats.if_dist_peptide,
-            'plddt': stats.plddt
-        } for i, stats in enumerate(self.generation_stats)]
-        with open(progression_file, 'w') as f:
-            json.dump(progression, f, indent=2)
 
     @staticmethod
     def get_good_bad_sequences(fitness, population, generation_size):
