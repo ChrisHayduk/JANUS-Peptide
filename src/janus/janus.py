@@ -162,7 +162,7 @@ class JANUS:
         """Compute fitness for a batch of sequences using Vertex AI pipeline.
         
         Args:
-            sequences (List[str]): List of sequences to evaluate
+            sequences (List[str]): List of peptide sequences to evaluate
             
         Returns:
             List[float]: Fitness values for each sequence
@@ -178,7 +178,7 @@ class JANUS:
         bucket = storage_client.bucket(self.bucket_name)
 
         # Launch pipeline jobs in parallel
-        pipeline_jobs: Dict[str, Tuple[aiplatform.PipelineJob, str]] = {}
+        pipeline_jobs: Dict[str, Tuple[aiplatform.PipelineJob, str, str]] = {}
         
         print(f"Launching {len(sequences)} Vertex AI pipeline jobs...")
         # Upload sequences to GCS and track their paths
@@ -187,10 +187,18 @@ class JANUS:
             # Create unique path for each sequence
             seq_id = f'peptide_{self.peptide_counter}'
             gcs_path = f'sequences/{self.experiment_id}/{seq_id}.fasta'
-            
-            # Create multi-chain FASTA content
-            # Chain A is the target protein, Chain B is the peptide
-            fasta_content = f'>A target_protein\n{self.target_sequence}\n>B {seq_id}\n{seq}\n'
+
+            # Construct FASTA with all target chains followed by the peptide
+            # Chains start at A for the first target chain, B for the second, etc.
+            # The last chain is the peptide.
+            fasta_content = ""
+            for i, chain_seq in enumerate(self.target_sequence):
+                chain_label = chr(65 + i)  # 'A' + i
+                fasta_content += f'>{chain_label} target_chain_{chain_label}\n{chain_seq}\n'
+
+            # Now add the peptide as the next chain
+            peptide_chain_label = chr(65 + len(self.target_sequence))
+            fasta_content += f'>{peptide_chain_label} {seq_id}\n{seq}\n'
             
             # Upload to GCS
             blob = bucket.blob(gcs_path)
@@ -200,15 +208,12 @@ class JANUS:
             sequence_paths[seq] = f'gs://{self.bucket_name}/{gcs_path}'
             self.peptide_counter += 1
 
-            # Create unique path for each sequence
+            # Create a unique job ID for each pipeline
             timestamp = int(time.time() * 1000)  # millisecond timestamp
             random_suffix = ''.join(random.choices('0123456789abcdef', k=6))  # random hex string
-
-            # Create unique job ID for each pipeline
             job_id = f'alphafold-multimer-{timestamp}-{random_suffix}'
 
             labels = {'experiment_id': f'{self.experiment_id}_{self.peptide_counter}', 'sequence_id': f'{seq_id}'}
-            # Assume pipeline parameters are configured through a template
             job = aiplatform.PipelineJob(
                 display_name=self.pipeline_name,
                 template_path=self.pipeline_template_path,
@@ -231,7 +236,7 @@ class JANUS:
             
             # Submit job
             job.submit()
-            pipeline_run_name = job.name  # This gets the generated pipeline run name
+            pipeline_run_name = job.name
             pipeline_jobs[seq] = (job, job.resource_name, pipeline_run_name)
             print(f"Launched pipeline for sequence {seq} with run name: {pipeline_run_name}")
             
@@ -244,64 +249,50 @@ class JANUS:
             completed_seqs = set()
             
             for seq in pending_jobs:
-                job, resource_name, pipeline_run_name = pipeline_jobs[seq]  # Unpack all three values
-                
-                # Check job status
+                job, resource_name, pipeline_run_name = pipeline_jobs[seq]  
                 status = job.state
                 print(f"Status for sequence {seq}: {status}")
                 
                 if status == gca_pipeline_state.PipelineState.PIPELINE_STATE_SUCCEEDED:
                     print(f"Pipeline suceeded for sequence {seq}")
 
-                    # Access task details to find the output of the specific task
+                    # Access task details
                     task_details = job.task_details
-
                     features_dir = ""
                         
-                    # Iterate over task details to find the task with the desired output
                     for task in task_details:
                         if task.task_name == 'create-run-id':
-
                             metadata_dict = dict(task.execution.metadata)
-
                             output_str = metadata_dict['output:Output']
                             output_json = json.loads(output_str)
                             features_dir = output_json['full_protein']
                             break
 
-
                     print(f"Features directory for sequence {seq}: {features_dir}")
                     
                     try:
-                        base_uri = f'gs://{self.bucket_name}/pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}'
-                        
-                        # List all predict_* directories
+                        # Collect predictions and find the best-ranking confidence
                         storage_client = storage.Client(project=self.project_id)
                         bucket = storage_client.bucket(self.bucket_name)
-                        prefix=f"pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}/"
+                        prefix = f"pipeline_runs/{self.pipeline_name}/16853584617/{pipeline_jobs[seq][2]}/"
                         
                         blobs = bucket.list_blobs(prefix=prefix)
-
                         predict_dirs = list(set(
                             "/".join(blob.name.split('/')[:-1]) for blob in blobs
                             if 'predict_' in blob.name and 'executor_output.json' in blob.name
                         ))
                         
-                        # Find prediction with highest ranking confidence
                         max_confidence = float('-inf')
                         best_prediction_path = None
                         
                         for predict_dir in predict_dirs:
-                            # Get the executor output JSON
                             executor_output_path = f"{predict_dir}/executor_output.json"
                             executor_output = self._download_and_parse_result(f"gs://{self.bucket_name}/{executor_output_path}")
                             
-                            # Extract ranking confidence
                             try:
                                 confidence = executor_output['artifacts']['raw_prediction']['artifacts'][0]['metadata']['ranking_confidence']
                                 if confidence > max_confidence:
                                     max_confidence = confidence
-                                    # Get path to raw_prediction.pkl in the same directory
                                     best_prediction_path = f"gs://{self.bucket_name}/{predict_dir}/raw_prediction.pkl"
                             except (KeyError, IndexError) as e:
                                 print(f"Warning: Could not extract ranking confidence from {executor_output_path}: {e}")
@@ -310,25 +301,23 @@ class JANUS:
                         if best_prediction_path is None:
                             raise ValueError("No valid predictions found")
                             
-                        # Load the best prediction and features
                         prediction_result = self._download_and_parse_result(best_prediction_path)
                         feature_dict = self._download_and_parse_result(f"{features_dir}/all_chain_features.pkl")
                         
-                        # Run fitness function on the AlphaFold2 output
-                        fitness, if_dist_peptide, plddt, unrelaxed_protein = self.fitness_function(
+                        # Compute fitness using the provided fitness function
+                        fitness_val, if_dist_peptide, plddt, unrelaxed_protein = self.fitness_function(
                             seq, 
                             self.receptor_if_residues, 
                             feature_dict, 
                             prediction_result
                         )
-                        results[seq] = fitness
+                        results[seq] = fitness_val
                         completed_seqs.add(seq)
-                        print(f"Successfully processed sequence {seq} with fitness {fitness}")
+                        print(f"Successfully processed sequence {seq} with fitness {fitness_val}")
                         print(f'pLDDT: {plddt}, if_dist_peptide: {if_dist_peptide}')
                         
                     except Exception as e:
                         print(f"Error processing results for sequence {seq}: {e}")
-                        # Assign worst possible fitness on failure
                         results[seq] = float('-inf')
                         completed_seqs.add(seq)
                 
@@ -344,28 +333,27 @@ class JANUS:
                 
                 elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_PAUSED:
                     print(f"Pipeline paused for sequence {seq}")
-                    # Don't mark as completed, will check again next iteration
+                    # Will check again next iteration
                 
                 elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_QUEUED:
                     print(f"Pipeline queued for sequence {seq}")
-                    # Don't mark as completed, will check again next iteration
+                    # Will check again next iteration
                 
                 elif status == gca_pipeline_state.PipelineState.PIPELINE_STATE_RUNNING:
                     print(f"Pipeline still running for sequence {seq}")
-                    # Don't mark as completed, will check again next iteration
+                    # Will check again next iteration
                 
                 else:
                     print(f"Unknown pipeline state {status} for sequence {seq}")
-                    # Don't mark as completed, will check again next iteration
+                    # Will check again next iteration
 
-            # Remove completed jobs from pending set
             pending_jobs -= completed_seqs
             
             if pending_jobs:
                 print(f"Waiting for {len(pending_jobs)} jobs to complete...")
-                time.sleep(60)  # Wait before checking again
+                time.sleep(60)
                 
-        # Return results in same order as input sequences
+        # Return results in the same order as input sequences
         return [results[seq] for seq in sequences]
 
     def _download_and_parse_result(self, output_uri: str):

@@ -1,5 +1,4 @@
 from janus.janus import JANUS
-
 from Bio import PDB
 from Bio.PDB.Polypeptide import three_to_one
 from Bio import SeqIO
@@ -31,10 +30,9 @@ def extract_sequence_from_pdb(pdb_path):
             chain_sequences[chain.id] = chain_sequence
         except KeyError as e:
             print(f"Warning: Could not convert some residues in chain {chain.id}: {e}")
-            chain_sequences[chain.id] = ""  # If conversion fails, set empty or partial
+            chain_sequences[chain.id] = ""  # If conversion fails, set to empty or partial
     
     return chain_sequences
-
 
 def extract_sequences_from_fasta(fasta_path):
     """
@@ -71,7 +69,6 @@ def generate_random_peptides(num_sequences=20, min_length=9, max_length=15, excl
     ])
     
     amino_acids = amino_acids - exclude_amino_acids
-    
     amino_acids = list(amino_acids)
     
     sequences = []
@@ -86,18 +83,24 @@ def generate_random_peptides(num_sequences=20, min_length=9, max_length=15, excl
     return sequences
 
 # Define file paths
-#pdb_path = "/home/jupyter/input/monomerTfR1.pdb"
-output_file = "/home/jupyter/input/start_population.txt"
+# Example usage:
+# pdb_path = "/home/jupyter/input/monomerTfR1.pdb"
 input_file = "/home/jupyter/input/tetramer.fasta"
+output_file = "/home/jupyter/input/start_population.txt"
 
-# Load the PDB and get sequence
-#sequence = extract_sequence_from_pdb(pdb_path)
+# Extract sequence(s) from FASTA file
+fasta_sequences = extract_sequences_from_fasta(input_file)
 
-# Extract sequence from FASTA file
-sequence = extract_sequences_from_fasta(input_file)
+# Convert the extracted dictionary into a list of chain sequences
+# For example, if we have multiple chains in the FASTA:
+# fasta_sequences might look like { "chain1": "ABC...", "chain2": "DEF..." }
+# We'll just take all sequences and treat them as distinct chains.
+# The order is based on input file (OrderedDict), but you can reorder if necessary.
+target_sequence = list(fasta_sequences.values())
 
-print(f"Extracted sequence ({len(sequence)} residues):")
-print(sequence)
+print(f"Extracted {len(target_sequence)} chain(s) from FASTA:")
+for i, seq in enumerate(target_sequence, start=1):
+    print(f"Chain {i}: {seq} (Length: {len(seq)})")
 
 # Check if output file exists
 if not os.path.exists(output_file):
@@ -124,31 +127,27 @@ janus = JANUS(
     # Required parameters
     work_dir="/home/jupyter/output/run1",                    # Directory to store results
     start_population="/home/jupyter/input/start_population.txt",        # File containing initial sequences
-    target_sequence=sequence,          # The protein sequence you're targeting
-    project_id='test-ligand-design',              # Google Cloud project ID
-    zone="us-central1-a",                          # GCP region
-    pipeline_root_path=f'gs://{BUCKET_NAME}/pipeline_runs/{pipeline_name}', # GCS path for pipeline artifacts
+    target_sequence=target_sequence,    # A list of chain sequences (no peptide yet)
+    project_id='test-ligand-design',    # Google Cloud project ID
+    zone="us-central1-a",               # GCP region
+    pipeline_root_path=f'gs://{BUCKET_NAME}/pipeline_runs/{pipeline_name}', 
     pipeline_template_path="/home/jupyter/JANUS-Peptide/src/multimer-pipeline-persistent-resource.json",
-    pipeline_name=pipeline_name,            # Name of your Vertex AI pipeline
-    bucket_name=BUCKET_NAME,                     # GCS bucket name
-    experiment_id="peptide-opt-1",                 # Unique identifier for this run
-    
-    # Optional parameters with defaults shown
-    verbose_out=True,                              # Detailed output
-    generations=1000,                               # Number of generations to run
-    generation_size=20,                            # Population size per generation
-    num_exchanges=5,                               # Number of sequences to exchange
-    explr_num_mutations=5,                         # Mutations during exploration
-    exploit_num_mutations=20,                      # Mutations during exploitation
-    top_seqs=1,                                    # Number of top sequences to keep
+    pipeline_name=pipeline_name,        
+    bucket_name=BUCKET_NAME,            
+    experiment_id="peptide-opt-1",      
+    verbose_out=True,                   
+    generations=1000,                   
+    generation_size=20,                 
+    num_exchanges=5,                    
+    explr_num_mutations=5,              
+    exploit_num_mutations=20,           
+    top_seqs=1,                         
     alphabet=['A', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L','N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'Y'],
-    
-    # AlphaFold specific parameters
-    use_small_bfd="true",                         # Use smaller BFD database
+    use_small_bfd="true",
     skip_msa="true",
-    num_multimer_predictions_per_model=1,          # Predictions per model
-    model_names=['model_5_multimer_v3'],          # Which AF2 models to use
-    max_template_date='2030-01-01'                # Template cutoff date
+    num_multimer_predictions_per_model=1,
+    model_names=['model_5_multimer_v3'],
+    max_template_date='2030-01-01'
 )
 
 # Run the optimization
